@@ -1,0 +1,71 @@
+name: Schedule Terraform Apply
+
+on:
+  # Issueが作成・編集されたときに実行
+  issues:
+    types: [opened, edited]
+  # 定期的なスケジュールチェック（5分毎）
+  schedule:
+    - cron: '*/5 * * * *'
+
+jobs:
+  process-schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check scheduled applies
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const now = new Date();
+            
+            // Issueのラベルでスケジュール済みのものを検索
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              labels: 'terraform-schedule',
+              state: 'open'
+            });
+            
+            for (const issue of issues.data) {
+              // Issue本文からスケジュール情報とPR番号を解析
+              const lines = issue.body.split('\n');
+              let scheduleTime = null;
+              let prNumber = null;
+              
+              for (const line of lines) {
+                if (line.startsWith('schedule:')) {
+                  scheduleTime = new Date(line.replace('schedule:', '').trim());
+                }
+                if (line.startsWith('pr:')) {
+                  prNumber = line.replace('pr:', '').trim();
+                }
+              }
+              
+              // スケジュール時刻を過ぎていて、まだ実行されていない場合
+              if (scheduleTime && prNumber && scheduleTime <= now && !issue.labels.includes('executed')) {
+                // Atlantis applyコマンドを実行
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.name,
+                  issue_number: parseInt(prNumber),
+                  body: 'atlantis apply'
+                });
+                
+                // Issueにexecutedラベルを追加
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.name,
+                  issue_number: issue.number,
+                  labels: ['executed']
+                });
+                
+                // Issueをクローズ
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.name,
+                  issue_number: issue.number,
+                  state: 'closed'
+                });
+              }
+            }
