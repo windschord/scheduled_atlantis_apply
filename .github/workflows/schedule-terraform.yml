@@ -1,9 +1,9 @@
 name: Schedule Terraform Apply
 
 on:
-  # Issueが作成・編集されたときに実行
-  issues:
-    types: [opened, edited]
+  # PRが作成・更新されたときに実行
+  pull_request:
+    types: [opened, edited, labeled]
   # 定期的なスケジュールチェック（5分毎）
   schedule:
     - cron: '*/5 * * * *'
@@ -19,53 +19,53 @@ jobs:
           script: |
             const now = new Date();
             
-            // Issueのラベルでスケジュール済みのものを検索
-            const issues = await github.rest.issues.listForRepo({
+            // terraform-scheduleラベルが付いているPRを検索
+            const prs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.name,
-              labels: 'terraform-schedule',
-              state: 'open'
+              state: 'open',
+              labels: 'terraform-schedule'
             });
             
-            for (const issue of issues.data) {
-              // Issue本文からスケジュール情報とPR番号を解析
-              const lines = issue.body.split('\n');
-              let scheduleTime = null;
-              let prNumber = null;
+            for (const pr of prs.data) {
+              // PR本文からスケジュール情報を解析
+              const scheduleMatch = pr.body.match(/schedule:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/);
+              if (!scheduleMatch) continue;
               
-              for (const line of lines) {
-                if (line.startsWith('schedule:')) {
-                  scheduleTime = new Date(line.replace('schedule:', '').trim());
-                }
-                if (line.startsWith('pr:')) {
-                  prNumber = line.replace('pr:', '').trim();
-                }
-              }
+              const scheduleTime = new Date(scheduleMatch[1]);
               
               // スケジュール時刻を過ぎていて、まだ実行されていない場合
-              if (scheduleTime && prNumber && scheduleTime <= now && !issue.labels.includes('executed')) {
+              if (scheduleTime <= now && !pr.labels.some(label => label.name === 'terraform-executed')) {
                 // Atlantis applyコマンドを実行
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.name,
-                  issue_number: parseInt(prNumber),
+                  issue_number: pr.number,
                   body: 'atlantis apply'
                 });
                 
-                // Issueにexecutedラベルを追加
+                // PRにexecutedラベルを追加
                 await github.rest.issues.addLabels({
                   owner: context.repo.owner,
                   repo: context.repo.name,
-                  issue_number: issue.number,
-                  labels: ['executed']
+                  issue_number: pr.number,
+                  labels: ['terraform-executed']
                 });
                 
-                // Issueをクローズ
-                await github.rest.issues.update({
+                // スケジュールラベルを削除
+                await github.rest.issues.removeLabel({
                   owner: context.repo.owner,
                   repo: context.repo.name,
-                  issue_number: issue.number,
-                  state: 'closed'
+                  issue_number: pr.number,
+                  name: 'terraform-schedule'
+                });
+                
+                // 実行ログをコメント
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.name,
+                  issue_number: pr.number,
+                  body: `🕒 Scheduled terraform apply executed at ${new Date().toISOString()}`
                 });
               }
             }
